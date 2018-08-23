@@ -35,6 +35,7 @@ struct tuntap {
     uint32_t key;
 };
 
+/* TODO: GRE header is first four bytes. Rest being transmitted is struct garbage */
 struct gre_packet {
     unsigned short preamble;
     unsigned short ethertype;
@@ -247,6 +248,7 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
     /* Split key from device path */
     tuntap_location = strsep(&device_parameter, "@");
     
+    /* TODO: Perform ioctl for Linux devices */
     /* Open the default tunnel device */
     if (fd = open(tuntap_location, O_RDWR), fd < 0) {
         err = errno;
@@ -427,12 +429,6 @@ main(int argc, char** argv)
     
     /* Run the event loop. This is a blocking call */
     event_dispatch();
-    
-    // When packets become available on TUN/TAP, encapsulate them in GRE over UDP and send them through the socket
-    
-    // Implement GRE Key extension header
-    
-    // Allow doing this for multiple tun/taps
     
     free(taps);
     free(tuns);
