@@ -5,7 +5,12 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <net/if.h>
-#include <net/if_tun.h>
+
+#ifdef __linux__
+    #include <net/if_tun.h>
+#else
+    #include <net/if_utun.h>
+#endif
 
 #include <event.h>
 
@@ -248,6 +253,24 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
     /* Split key from device path */
     tuntap_location = strsep(&device_parameter, "@");
     
+#ifdef __linux__
+    if (fd = open("/dev/net/tun", O_RDWR), fd < 0) {
+        lerrx(1, "Error opening generic tunnel device for %s: %s", tuntap_location, strerror(err));
+        return fd;
+    }
+    
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TUN|IFF_NO_PI;
+    strncpy(ifr.ifr_name, device_parameter, IFNAMSIZ);
+    
+    if (ioctl(fd, TUNSETIFF, (void *) &ifr) < 0) {
+        lerrx(1, "Error opening tunnel device %s: %s", tuntap_location, strerror(err));
+        return fd;
+    }
+    
+#else
+    
     /* TODO: Perform ioctl for Linux devices */
     /* Open the default tunnel device */
     if (fd = open(tuntap_location, O_RDWR), fd < 0) {
@@ -255,6 +278,7 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
         lerrx(1, "Error opening tunnel device %s: %s", tuntap_location, strerror(err));
         return fd;
     }
+#endif
     
     /* Set the file descriptor to represent a TUN/TAP */
     if (err = ioctl(fd, FIONBIO, &(int){ 1 }), err < 0) {

@@ -1,18 +1,18 @@
 CC = gcc
-CFLAGS = -Wall -Werror -pedantic -std=gnu99
-SOURCES := $(wildcard *.c)
-OBJECTS := $(SOURCES:.c=.o)
+PROGRAM = greu
+SOURCES = $(wildcard *.c)
+OBJECTS = $(patsubst %.c, %.o, $(SOURCES))
+MAN =
 LINKER_LIBS = -levent
-COMPILE_LIBS = 
+CFLAGS += -Wall -Werror -g
 DEBUG = -g
 
-.PHONY: clean
-
 all: $(OBJECTS)
-	$(CC) $(LINKER_LIBS) $(OBJECTS) -o greu
-
-.c.o:
-	$(CC) $(CFLAGS) $(COMPILE_LIBS) -c $< -o $@
-
+	gcc $(LINKER_LIBS) log.o greu.o -o $(PROGRAM)
+	
+.c.o: $(SOURCES)
+	gcc -c $< -o $@
+	
+.PHONY: clean
 clean:
-	rm -rf *.o greu
+	rm -rf $(PROGRAM) *.o
