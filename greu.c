@@ -48,7 +48,7 @@ struct gre_packet {
     unsigned short reserved;
     unsigned long key;
     unsigned long sequence;
-    unsigned char data[];
+    char data[BUFSIZE];
 };
 
 extern int errno;
@@ -209,7 +209,7 @@ void
 encapsulate(int fd, short events, void *conn)
 {
     /* TODO: Packets on tun are prefixed with ethertype read tun(4) better */
-    unsigned char buffer[BUFSIZE];
+    char buffer[BUFSIZE];
     struct tuntap *tuntap_struct;
     struct gre_packet packet;
     
