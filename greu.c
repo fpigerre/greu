@@ -445,6 +445,7 @@ main(int argc, char** argv)
     
     /* TODO: Event setup has to occur after daemonisation. Event struct data is not carried across fork */
     
+    /* TODO: daemon() has been deprecated */
     /* Daemonise */
     if (daemonise) {
         logger_syslog(getprogname());
