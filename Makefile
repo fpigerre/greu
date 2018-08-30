@@ -1,9 +1,18 @@
-PROG=greu
-SRCS=greu.c log.c
-MAN=
-LDADD=-levent
-DPADD=${LIBEVENT}
-CFLAGS+= -Wall -Werror -g
-DEBUG=-g
+CC = gcc
+CFLAGS = -Wall -Werror -pedantic -std=gnu99
+SOURCES := $(wildcard *.c)
+OBJECTS := $(SOURCES:.c=.o)
+LINKER_LIBS = -levent
+COMPILE_LIBS = 
+DEBUG = -g
 
-.include <bsd.prog.mk>
+.PHONY: clean
+
+all: $(OBJECTS)
+	$(CC) $(LINKER_LIBS) $(OBJECTS) -o greu
+
+.c.o:
+	$(CC) $(CFLAGS) $(COMPILE_LIBS) -c $< -o $@
+
+clean:
+	rm -rf *.o greu
