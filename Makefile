@@ -7,11 +7,11 @@ LINKER_LIBS = -levent
 CFLAGS += -Wall -Werror -g
 DEBUG = -g
 
-all: $(OBJECTS)
-	gcc $(LINKER_LIBS) log.o greu.o -o $(PROGRAM)
+all: log.o greu.o
+	gcc $(DEBUG) $(LINKER_LIBS) log.o greu.o -o $(PROGRAM)
 	
 .c.o: $(SOURCES)
-	gcc -c $< -o $@
+	gcc $(DEBUG) -c $< -o $@
 	
 .PHONY: clean
 clean:

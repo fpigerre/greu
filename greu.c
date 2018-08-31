@@ -5,12 +5,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <net/if.h>
-
-#ifdef __linux__
-    #include <net/if_tun.h>
-#else
-    #include <net/if_utun.h>
-#endif
+#include <net/if_tun.h>
 
 #include <event.h>
 
@@ -40,15 +35,11 @@ struct tuntap {
     uint32_t key;
 };
 
-/* TODO: GRE header is first four bytes. Rest being transmitted is struct garbage */
 struct gre_packet {
     unsigned short preamble;
     unsigned short ethertype;
-    unsigned short checksum;
-    unsigned short reserved;
     unsigned long key;
-    unsigned long sequence;
-    char data[BUFSIZE];
+    char *data;
 };
 
 extern int errno;
@@ -193,7 +184,8 @@ decapsulate(int fd, short events, void *conn)
         is_tap = 0;
     }
     
-    for (int i = 0; i < num_tuntaps; ++i) {
+    int i;
+    for (i = 0; i < num_tuntaps; ++i) {
         if (taplist[i]->is_tap == is_tap) {
             if (taplist[i]->key == ntohs(packet->key)) {
                 write(taplist[i]->fd, packet->data, sizeof(*packet->data));
@@ -208,21 +200,27 @@ decapsulate(int fd, short events, void *conn)
 void
 encapsulate(int fd, short events, void *conn)
 {
-    /* TODO: Packets on tun are prefixed with ethertype read tun(4) better */
     char buffer[BUFSIZE];
     struct tuntap *tuntap_struct;
     struct gre_packet packet;
+    ssize_t read_length;
     
     tuntap_struct = (struct tuntap *) conn;
     memset(&packet, 0, sizeof(struct gre_packet));
     
     /* Read frame/packet */
-    read(fd, &buffer, BUFSIZE);
-    strncpy(packet.data, buffer, BUFSIZE);
+    if (read_length = read(fd, &buffer, BUFSIZE), read_length < 0) {
+        lerrx(1, "Error reading from tunnel device %s: %s\n", tuntap_struct->tuntap_location, strerror(read_length));
+    }
+    
+    /* Copy read data to packet struct */
+    packet.data = malloc(read_length);
+    memset(packet.data, 0, read_length);
     
     /* Populate EtherType value */
     if (tuntap_struct->is_tap) {
         packet.ethertype = ETHER_PACKET;
+        strncpy(packet.data, buffer, read_length);
     } else {
         /* Check whether TUN packet is IPv4 or IPv6 */
         if ((buffer[0] & 0x40) == 0x40) {
@@ -230,11 +228,14 @@ encapsulate(int fd, short events, void *conn)
         } else {
             packet.ethertype = IPv6_PACKET;
         }
+        /* Packets from tun(4) are prefixed with a 4 byte tunnel header */
+        strncpy(&packet.data[4], buffer, read_length - (4 * sizeof(char)));
     }
     
     packet.key = tuntap_struct->key;
     
-    write(tuntap_struct->socket_fd, &packet, sizeof(struct gre_packet) + BUFSIZE);
+    write(tuntap_struct->socket_fd, &packet, sizeof(struct gre_packet));
+    free(packet.data);
 }
 
 /**
@@ -254,6 +255,7 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
     tuntap_location = strsep(&device_parameter, "@");
     
 #ifdef __linux__
+    /* Open the default tunnel device if on Linux */
     if (fd = open("/dev/net/tun", O_RDWR), fd < 0) {
         lerrx(1, "Error opening generic tunnel device for %s: %s", tuntap_location, strerror(err));
         return fd;
@@ -270,9 +272,6 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
     }
     
 #else
-    
-    /* TODO: Perform ioctl for Linux devices */
-    /* Open the default tunnel device */
     if (fd = open(tuntap_location, O_RDWR), fd < 0) {
         err = errno;
         lerrx(1, "Error opening tunnel device %s: %s", tuntap_location, strerror(err));
@@ -280,7 +279,7 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
     }
 #endif
     
-    /* Set the file descriptor to represent a TUN/TAP */
+    /* Make sure the file descriptor isn't blocking */
     if (err = ioctl(fd, FIONBIO, &(int){ 1 }), err < 0) {
         close(fd);
         lerrx(1, "Error opening tunnel device %s: %s", tuntap_location, strerror(err));
@@ -413,12 +412,24 @@ main(int argc, char** argv)
         src_port = argv[1];
     }
     
+    if (num_taps < 1 && num_tuns < 1) {
+        lerrx(1, "At least one IP or Ethernet tunnel must be configured.");
+    }
+    
     hostname = argv[0];
     
     /* Open a UDP socket to specified server (default port 4754) */
     socket_fd = connect_to_server(hostname, service_name, ai_family, src_address, src_port);
     
+    /* TODO: daemon() has been deprecated */
+    /* Daemonise */
+    if (daemonise) {
+        logger_syslog(getprogname());
+        daemon(0, 0);
+    }
+    
     /* Initialise libevent */
+    /* Event setup has to occur after daemonisation. Event struct data is not carried across fork */
     event_init();
     
     /* Create event for when data is received on the socket */
@@ -427,29 +438,17 @@ main(int argc, char** argv)
     event_set(socket_event, socket_fd, EV_READ|EV_PERSIST, decapsulate, socket_event);
     event_add(socket_event, NULL);
     
-    /* Loop through configured TUN/TAP interfaces */
-    if (num_taps < 1 && num_tuns < 1) {
-        lerrx(1, "At least one IP or Ethernet tunnel must be configured.");
-    }
-    
     /* Allocate memory for global taplist */
     taplist = malloc((num_taps + num_tuns) * sizeof(struct tuntap));
     
-    for (int i = 0; i < num_taps; ++i) {
+    /* Loop through configured TUN/TAP interfaces */
+    int i;
+    for (i = 0; i < num_taps; ++i) {
         open_tuntap(taps[i], 1, socket_fd);
     }
     
-    for (int i = 0; i < num_tuns; ++i) {
+    for (i = 0; i < num_tuns; ++i) {
         open_tuntap(tuns[i], 0, socket_fd);
-    }
-    
-    /* TODO: Event setup has to occur after daemonisation. Event struct data is not carried across fork */
-    
-    /* TODO: daemon() has been deprecated */
-    /* Daemonise */
-    if (daemonise) {
-        logger_syslog(getprogname());
-        daemon(0, 0);
     }
     
     /* Run the event loop. This is a blocking call */
