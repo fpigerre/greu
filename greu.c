@@ -5,7 +5,12 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <net/if.h>
+
+#ifdef __linux__
+#include <linux/if_tun.h>
+#else
 #include <net/if_tun.h>
+#endif
 
 #include <event.h>
 
@@ -50,7 +55,11 @@ int num_tuntaps;
 /**
  *  Print usage information for the program.
  */
+#ifdef __linux__
+void
+#else
 __dead void
+#endif
 usage()
 {
     extern char *__progname;
