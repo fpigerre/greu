@@ -19,10 +19,17 @@
 #define _LOG_H_
 
 struct __logger {
+#ifdef __linux__
+	void (*err)(int, const char *, ...)
+	    __attribute__((__format__ (printf, 2, 3)));
+	void (*errx)(int, const char *, ...)
+	    __attribute__((__format__ (printf, 2, 3)));
+#else
 	__dead void (*err)(int, const char *, ...)
 	    __attribute__((__format__ (printf, 2, 3)));
 	__dead void (*errx)(int, const char *, ...)
 	    __attribute__((__format__ (printf, 2, 3)));
+#endif
 	void (*warn)(const char *, ...)
 	    __attribute__((__format__ (printf, 1, 2)));
 	void (*warnx)(const char *, ...)

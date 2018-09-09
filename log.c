@@ -15,6 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#define _GNU_SOURCE /* Used to include vasprintf */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,10 +37,17 @@ static const struct __logger conslogger = {
 	warnx /* debug */
 };
 
+#ifdef __linux__
+static void		syslog_err(int, const char *, ...)
+			    __attribute__((__format__ (printf, 2, 3)));
+static void		syslog_errx(int, const char *, ...)
+			    __attribute__((__format__ (printf, 2, 3)));
+#else
 __dead static void	syslog_err(int, const char *, ...)
 			    __attribute__((__format__ (printf, 2, 3)));
 __dead static void	syslog_errx(int, const char *, ...)
 			    __attribute__((__format__ (printf, 2, 3)));
+#endif
 static void		syslog_warn(const char *, ...)
 			    __attribute__((__format__ (printf, 1, 2)));
 static void		syslog_warnx(const char *, ...)
