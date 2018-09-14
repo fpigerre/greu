@@ -67,47 +67,70 @@ usage()
     exit(1);
 }
 
+struct addrinfo *
+resolve_address(const char *hostname, const char *service_name, sa_family_t ai_family)
+{
+    struct addrinfo hints;
+    struct addrinfo *res;
+    int error;
+    
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_family = ai_family;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    
+    error = getaddrinfo(hostname, service_name, &hints, &res);
+    
+    if (error) {
+        lerrx(1, "%s", gai_strerror(error));
+    }
+    
+    return res;
+}
+
 /**
- *  Open a UDP socket using an addrinfo struct.
+ *  Open a socket to a server using a hostname and service name.
  */
 int
-open_socket(struct addrinfo *result, struct addrinfo *local_result)
+connect_to_server(char* hostname, char* service_name, sa_family_t ai_family, const char *src_address, const char *src_port)
 {
-    struct addrinfo *res0;
+    struct addrinfo *local_addrinfo, *remote_addrinfo, *res;
     int socket_fd;
     const char *cause;
     
-    socket_fd = -1;
+    local_addrinfo = resolve_address(src_address, src_port, ai_family);
     
-    /* Find a result that matches the hints given */
-    for (res0 = result; res0; res0 = res0->ai_next) {
-        /* Open a corresponding socket */
-        socket_fd = socket(res0->ai_family, res0->ai_socktype, res0->ai_protocol);
+    for (res = local_addrinfo; res != NULL; res = res->ai_next) {
+        socket_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         
         if (socket_fd < 0) {
-            cause = "socket";
+            cause = strerror(errno);
             continue;
         }
         
         if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0) {
-            cause = "socket options";
+            cause = strerror(errno);
             continue;
         }
         
         /* Bind socket to a specific local address and port if necessary */
-        if (local_result != NULL) {
-            if (bind(socket_fd, local_result->ai_addr, sizeof(*local_result->ai_addr)) < 0) {
-                cause = "bind";
-                close(socket_fd);
-                socket_fd = -1;
-                continue;
-            }
-            freeaddrinfo(local_result);
+        if (bind(socket_fd, res->ai_addr, res->ai_addrlen) < 0) {
+            cause = strerror(errno);
+            close(socket_fd);
+            socket_fd = -1;
+            continue;
         }
         
+        break;
+    }
+    
+    remote_addrinfo = resolve_address(hostname, service_name, ai_family);
+    
+    for (res = remote_addrinfo;  res != NULL; res = res->ai_next) {
         /* Connect to the corresponding socket */
-        if (connect(socket_fd, res0->ai_addr, res0->ai_addrlen) < 0) {
-            cause = "connect";
+        if (connect(socket_fd, res->ai_addr, res->ai_addrlen) < 0) {
+            cause = strerror(errno);
             close(socket_fd);
             socket_fd = -1;
             continue;
@@ -120,58 +143,10 @@ open_socket(struct addrinfo *result, struct addrinfo *local_result)
         lerr(1, "%s", cause);
     }
     
-    freeaddrinfo(res0);
+    freeaddrinfo(local_addrinfo);
+    freeaddrinfo(remote_addrinfo);
+
     return socket_fd;
-}
-
-/**
- *  Resolve a hostname and service name into an addrinfo struct.
- */
-struct addrinfo *
-resolve_addresses(char *hostname, char *service_name, sa_family_t ai_family)
-{
-    /* TODO: Desired source port is not returned from getaddrinfo */
-    int error;
-    struct addrinfo hints, *res0;
-    
-    /* Request a UDP socket using a particular address family */
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
-    
-    if (ai_family == AF_INET6) {
-        hints.ai_family = AF_INET6;
-    } else {
-        hints.ai_family = AF_INET;
-    }
-    
-    /* Resolve the hostname */
-    error = getaddrinfo(hostname, service_name, &hints, &res0);
-    
-    if (error) {
-        lerrx(1, "%s", gai_strerror(error));
-    }
-    
-    return res0;
-}
-
-/**
- *  Open a socket to a server using a hostname and service name.
- */
-int
-connect_to_server(char* hostname, char* service_name, sa_family_t ai_family, char *src_address, char *src_port)
-{
-    struct addrinfo *result, *local_result;
-    
-    result = resolve_addresses(hostname, service_name, ai_family);
-    
-    if (src_address != NULL) {
-        local_result = resolve_addresses(src_address, src_port, ai_family);
-    } else {
-        local_result = NULL;
-    }
-    
-    return open_socket(result, local_result);
 }
 
 /**
@@ -183,21 +158,29 @@ decapsulate(int fd, short events, void *conn)
     char buffer[BUFSIZE];
     struct gre_packet *packet;
     int is_tap;
+    size_t length;
     
-    packet = (struct gre_packet *) buffer;
     read(fd, &buffer, BUFSIZE);
+    packet = (struct gre_packet *) buffer;
     
     if (ntohs(packet->ethertype) == ETHER_PACKET) {
         is_tap = 1;
+        length = sizeof(*packet->data);
     } else {
         is_tap = 0;
+        length = sizeof(packet->ethertype) + sizeof(*packet->data);
     }
     
     int i;
     for (i = 0; i < num_tuntaps; ++i) {
+        /* Ensure whether packet is for TUN/TAP matches */
         if (taplist[i]->is_tap == is_tap) {
             if (taplist[i]->key == ntohs(packet->key)) {
-                write(taplist[i]->fd, packet->data, sizeof(*packet->data));
+                if (is_tap) {
+                    write(taplist[i]->fd, packet->data, length);
+                } else {
+                    write(taplist[i]->fd, htons(packet->ethertype) + packet->data, length);
+                }
             }
         }
     }
@@ -243,7 +226,7 @@ encapsulate(int fd, short events, void *conn)
     
     packet.key = tuntap_struct->key;
     
-    write(tuntap_struct->socket_fd, &packet, sizeof(struct gre_packet));
+    write(tuntap_struct->socket_fd, &packet, sizeof(struct gre_packet) + read_length);
     free(packet.data);
 }
 
@@ -449,6 +432,7 @@ main(int argc, char** argv)
     
     /* Allocate memory for global taplist */
     taplist = malloc((num_taps + num_tuns) * sizeof(struct tuntap));
+    memset(taplist, 0, (num_taps + num_tuns) * sizeof(struct tuntap));
     
     /* Loop through configured TUN/TAP interfaces */
     int i;
@@ -463,8 +447,13 @@ main(int argc, char** argv)
     /* Run the event loop. This is a blocking call */
     event_dispatch();
     
+    for (i = 0; i < num_tuntaps; ++i) {
+        close(taplist[i]->fd);
+    }
+    
     free(taps);
     free(tuns);
+    free(taplist);
     close(socket_fd);
     
     return 0;
