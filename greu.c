@@ -40,11 +40,9 @@ struct tuntap {
     uint32_t key;
 };
 
-struct gre_packet {
-    unsigned short preamble;
-    unsigned short ethertype;
-    unsigned long key;
-    char *data;
+struct gre_header {
+    uint16_t flags;
+    uint16_t protocol;
 };
 
 extern int errno;
@@ -155,32 +153,40 @@ connect_to_server(char* hostname, char* service_name, sa_family_t ai_family, con
 void
 decapsulate(int fd, short events, void *conn)
 {
-    char buffer[BUFSIZE];
-    struct gre_packet *packet;
+    char *buffer;
+    struct gre_header *header;
+    uint32_t key;
     int is_tap;
-    size_t length;
+    ssize_t read_length;
     
-    read(fd, &buffer, BUFSIZE);
-    packet = (struct gre_packet *) buffer;
+    buffer = malloc(BUFSIZE);
     
-    if (ntohs(packet->ethertype) == ETHER_PACKET) {
+    if (read_length = read(fd, buffer, BUFSIZE), read_length < 0) {
+        lerrx(1, "Error reading from socket: %s\n", strerror(errno));
+    }
+    
+    header = (struct gre_header *) buffer;
+    
+    /* Check GRE Key Present field */
+    if (header->flags & 0x2000) {
+        memcpy(&key, &buffer[4], sizeof(key));
+        buffer += 4;
+        read_length -= 4;
+    }
+    
+    /* Read packet protocol type */
+    if (ntohs(header->protocol) == ETHER_PACKET) {
         is_tap = 1;
-        length = sizeof(*packet->data);
     } else {
         is_tap = 0;
-        length = sizeof(packet->ethertype) + sizeof(*packet->data);
     }
     
     int i;
     for (i = 0; i < num_tuntaps; ++i) {
         /* Ensure whether packet is for TUN/TAP matches */
         if (taplist[i]->is_tap == is_tap) {
-            if (taplist[i]->key == ntohs(packet->key)) {
-                if (is_tap) {
-                    write(taplist[i]->fd, packet->data, length);
-                } else {
-                    write(taplist[i]->fd, htons(packet->ethertype) + packet->data, length);
-                }
+            if (taplist[i]->key == ntohs(key)) {
+                write(taplist[i]->fd, &buffer[4], read_length - 4);
             }
         }
     }
@@ -192,42 +198,74 @@ decapsulate(int fd, short events, void *conn)
 void
 encapsulate(int fd, short events, void *conn)
 {
-    char buffer[BUFSIZE];
+    char *buffer;
     struct tuntap *tuntap_struct;
-    struct gre_packet packet;
+    struct gre_header header;
     ssize_t read_length;
+    ssize_t datalen;
     
+    char *data;
+    uint32_t address_family;
+    
+    buffer = malloc(BUFSIZE);
     tuntap_struct = (struct tuntap *) conn;
-    memset(&packet, 0, sizeof(struct gre_packet));
+    memset(&header, 0, sizeof(struct gre_header));
     
-    /* Read frame/packet */
-    if (read_length = read(fd, &buffer, BUFSIZE), read_length < 0) {
-        lerrx(1, "Error reading from tunnel device %s: %s\n", tuntap_struct->tuntap_location, strerror(read_length));
+    /* Read frame/packet from tunnel device */
+    if (read_length = read(fd, buffer, BUFSIZE), read_length < 0) {
+        lerrx(1, "Error reading from tunnel device %s: %s\n", tuntap_struct->tuntap_location, strerror(errno));
     }
     
-    /* Copy read data to packet struct */
-    packet.data = malloc(read_length);
-    memset(packet.data, 0, read_length);
+    /* Set GRE Key Present field */
+    if (tuntap_struct->key != 0) {
+        header.flags = header.flags | 0x2000;
+    }
     
-    /* Populate EtherType value */
+    /* Set GRE Protocol Type field */
     if (tuntap_struct->is_tap) {
-        packet.ethertype = ETHER_PACKET;
-        strncpy(packet.data, buffer, read_length);
+        header.protocol = htons(ETHER_PACKET);
     } else {
-        /* Check whether TUN packet is IPv4 or IPv6 */
-        if ((buffer[0] & 0x40) == 0x40) {
-            packet.ethertype = IPv4_PACKET;
-        } else {
-            packet.ethertype = IPv6_PACKET;
+        /* TUN prefixes data with 4-byte network order EtherType */
+        memcpy(&address_family, buffer, sizeof(address_family));
+        
+        switch (ntohl(address_family)) {
+            case AF_INET:
+                header.protocol = htons(IPv4_PACKET);
+                break;
+                
+            case AF_INET6:
+                header.protocol = htons(IPv6_PACKET);
+                break;
+                
+            default:
+                /* Address family is unsupported */
+                return;
         }
-        /* Packets from tun(4) are prefixed with a 4 byte tunnel header */
-        strncpy(&packet.data[4], buffer, read_length - (4 * sizeof(char)));
+        
+        buffer += 4;
+        read_length -= 4;
     }
     
-    packet.key = tuntap_struct->key;
+    /* Initialise data buffer and prepend header */
+    data = malloc(sizeof(struct gre_header) + read_length);
+    memset(data, 0, sizeof(struct gre_header) + read_length);
+    memcpy(data, &header, sizeof(struct gre_header));
+    datalen = sizeof(struct gre_header) + read_length;
     
-    write(tuntap_struct->socket_fd, &packet, sizeof(struct gre_packet) + read_length);
-    free(packet.data);
+    /* Prepend GRE key to data if necessary */
+    if (tuntap_struct->key != 0) {
+        if (data = realloc(data, sizeof(struct gre_header) + sizeof(uint32_t) + read_length), data == NULL) {
+            lerrx(1, "%s\n", strerror(errno));
+        }
+        
+        memcpy(&data[4], &tuntap_struct->key, sizeof(uint32_t));
+        datalen += 4;
+    }
+    
+    /* Append data read from tunnel device to data buffer */
+    memcpy(&data[datalen - read_length], buffer, read_length);
+    
+    write(tuntap_struct->socket_fd, data, datalen);
 }
 
 /**
@@ -291,7 +329,7 @@ open_tuntap(char *device_parameter, int is_tap, int socket_fd)
         if (key_value == UINTMAX_MAX) {
             lerrx(1, "Invalid key specified for device %s", tuntap_location);
         } else {
-            tuntap_struct->key = (uint32_t) key_value;
+            tuntap_struct->key = htons((uint32_t) key_value);
         }
     }
     
