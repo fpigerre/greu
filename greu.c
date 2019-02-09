@@ -8,7 +8,7 @@
 
 #ifdef __linux__
 #include <linux/if_tun.h>
-#else
+#elifndef __MACH__
 #include <net/if_tun.h>
 #endif
 
