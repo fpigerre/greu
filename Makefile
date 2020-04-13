@@ -7,8 +7,8 @@ LINKER_LIBS = -levent
 CFLAGS += -Wall -Werror -g
 DEBUG = -g
 
-all: log.o greu.o
-	gcc $(DEBUG) $(LINKER_LIBS) log.o greu.o -o $(PROGRAM)
+build: $(OBJECTS)
+	gcc $(DEBUG) $(LINKER_LIBS) $(OBJECTS) -o $(PROGRAM)
 	
 .c.o: $(SOURCES)
 	gcc $(DEBUG) -c $< -o $@
